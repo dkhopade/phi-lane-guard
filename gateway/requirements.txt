@@ -1,0 +1,4 @@
+litellm[proxy]==1.63.11
+presidio-analyzer==2.2.355
+spacy==3.7.5
+pyyaml==6.0.2

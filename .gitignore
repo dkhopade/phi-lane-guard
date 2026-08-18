@@ -1,0 +1,7 @@
+.env
+.state
+.bucket
+audit/
+__pycache__/
+*.pyc
+.venv/

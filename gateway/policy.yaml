@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# Residency policy.
+#
+# This file is the point of the whole PoC: the rules that decide where
+# inference may run are DATA, not code. A privacy officer can read this
+# without reading Python, and it can be diffed, reviewed and version
+# controlled like any other compliance artifact.
+# ---------------------------------------------------------------------------
+
+lanes:
+  in_tenancy:
+    description: >-
+      Self-hosted models inside the customer VCN. Private subnet, no route to
+      an internet gateway or NAT. PHI may execute here.
+    phi_permitted: true
+    egress: none
+    models:
+      - intenancy-llama
+
+  frontier:
+    description: >-
+      External model providers reached over the public internet. Higher
+      quality, but outside the tenancy boundary. PHI may NOT execute here.
+    phi_permitted: false
+    egress: internet
+    models:
+      - frontier-claude
+
+# What happens when a request carrying PHI targets a lane that does not
+# permit it.
+#
+#   deny      - fail closed with 403 and a policy reason code (default)
+#   reroute   - silently send it to a compliant lane instead
+#
+# 'deny' is the correct default for a demo: a silent reroute is invisible to
+# the caller and teaches developers nothing. Flip to 'reroute' to show the
+# alternative posture.
+on_violation: deny
+
+# The lane used when the caller asks for model "auto" instead of naming one.
+# Non-PHI traffic gets quality; PHI traffic gets the tenancy boundary.
+auto_routing:
+  phi: in_tenancy
+  non_phi: frontier
+
+# Presidio entity types that count as PHI for this PoC, with the confidence
+# floor below which a hit is ignored.
+#
+# NOTE: this list is illustrative, not a HIPAA Safe Harbor implementation.
+# Safe Harbor enumerates 18 identifier classes; several (full-face imagery,
+# biometric identifiers, device serials) are out of scope here. Say this
+# plainly in the readout.
+detection:
+  score_threshold: 0.5
+
+  # Per-entity overrides. Presidio's phone recognizer returns a flat 0.4 for
+  # US numbers regardless of format, which sits below the global floor — a
+  # silent miss that we found only by testing the classifier in isolation.
+  # Override it here rather than dropping the global threshold, which would
+  # let low-confidence PERSON and LOCATION hits start causing false denials.
+  entity_thresholds:
+    PHONE_NUMBER: 0.35
+    US_DRIVER_LICENSE: 0.4
+
+  entities:
+    - PERSON
+    - US_SSN
+    - PHONE_NUMBER
+    - EMAIL_ADDRESS
+    - DATE_TIME
+    - LOCATION
+    - US_DRIVER_LICENSE
+    - MEDICAL_LICENSE
+    - US_BANK_NUMBER
+    - CREDIT_CARD
+    - MRN            # custom recognizer, see phi_guard.py
+
+  # Entities that are too noisy on their own to justify a denial. A bare
+  # date or city in a prompt is not PHI; a date next to a person's name is.
+  # Requires at least one entity from `strong` before denying.
+  strong:
+    - PERSON
+    - US_SSN
+    - PHONE_NUMBER
+    - EMAIL_ADDRESS
+    - MRN
+    - US_DRIVER_LICENSE
+    - US_BANK_NUMBER
+    - CREDIT_CARD

@@ -1,0 +1,18 @@
+services:
+  gateway:
+    build: .
+    container_name: phi-gateway
+    ports:
+      - "4000:4000"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      VLLM_API_BASE: ${VLLM_API_BASE}
+      OCI_REGION: ${OCI_REGION}
+      POLICY_PATH: /app/policy.yaml
+      AUDIT_PATH: /app/audit/audit.jsonl
+    volumes:
+      # NOTE: create ./audit first -- older podman will not auto-create it
+      - ./audit:/app/audit
+      - ./policy.yaml:/app/policy.yaml:ro
+    restart: unless-stopped

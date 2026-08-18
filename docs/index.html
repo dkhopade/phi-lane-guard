@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PHI Lane Guard — residency enforced by topology, not convention</title>
+<meta name="description" content="A working proof of concept on OCI: PHI classification at the gateway, execution lanes enforced by network topology, and an audit record on every decision.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EDF1F4;
+  --card:#FFFFFF;
+  --ink:#14212C;
+  --muted:#5B6C79;
+  --rule:#C3D0DA;
+  --blue:#2E5C8A;
+  --seal:#2F6B45;
+  --deny:#B0322B;
+  --amber:#96702C;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+  --cond:'IBM Plex Sans Condensed',var(--sans);
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --maxw:1080px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16.5px;line-height:1.62;-webkit-font-smoothing:antialiased;
+  background-image:linear-gradient(var(--rule) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--rule) 1px,transparent 1px);
+  background-size:64px 64px;background-position:-1px -1px;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(ellipse at 50% 0%,rgba(237,241,244,.2),var(--paper) 72%);
+}
+.wrap{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+/* ---------- structural labels ---------- */
+.eyebrow{
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--blue);font-weight:500;margin:0 0 10px;
+}
+h1{font-family:var(--cond);font-weight:700;font-size:clamp(2.1rem,5.4vw,3.5rem);
+   line-height:1.06;letter-spacing:-.015em;margin:0 0 16px}
+h2{font-family:var(--cond);font-weight:700;font-size:clamp(1.5rem,3.2vw,2.1rem);
+   line-height:1.14;letter-spacing:-.01em;margin:0 0 14px}
+h3{font-family:var(--cond);font-weight:600;font-size:1.12rem;margin:0 0 8px}
+p{margin:0 0 15px;max-width:68ch}
+.lede{font-size:1.12rem;color:var(--muted);max-width:60ch}
+a{color:var(--blue)}
+
+/* ---------- hero ---------- */
+header{padding:76px 0 20px}
+.masthead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:34px}
+.mark{font-family:var(--mono);font-size:12.5px;font-weight:600;letter-spacing:.1em;
+      color:var(--ink);border:1.5px solid var(--ink);padding:3px 9px}
+.mast-meta{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.04em}
+
+/* the signature artifact */
+.artifact{
+  background:#0E1A22;border:1px solid #23323D;border-radius:3px;margin:34px 0 8px;
+  font-family:var(--mono);font-size:13.5px;line-height:1.85;overflow:hidden;
+  box-shadow:0 18px 40px -24px rgba(20,33,44,.55);
+}
+.artifact-bar{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:9px 16px;border-bottom:1px solid #23323D;color:#7B8D9B;font-size:11.5px;
+  letter-spacing:.08em;text-transform:uppercase;
+}
+.artifact-body{padding:18px 20px;color:#C6D3DC;overflow-x:auto}
+.artifact-body .ln{display:block;white-space:pre;opacity:0;transform:translateY(3px);
+  animation:rise .34s cubic-bezier(.2,.7,.3,1) forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+.k{color:#7B8D9B}
+.claim{color:#C6913F}
+.strike{text-decoration:line-through;text-decoration-color:#B0322B;
+        text-decoration-thickness:2px;opacity:.62}
+.deny{color:#E06A5F;font-weight:600}
+.ok{color:#63B37E}
+.artifact-foot{
+  padding:11px 20px;border-top:1px solid #23323D;color:#7B8D9B;font-size:12px;
+}
+@media(prefers-reduced-motion:reduce){.artifact-body .ln{animation:none;opacity:1;transform:none}}
+
+.hero-note{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin:14px 0 0}
+
+/* ---------- sections ---------- */
+section{padding:54px 0;border-top:1px solid var(--rule)}
+section:first-of-type{border-top:none}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:38px}
+@media(max-width:760px){.two{grid-template-columns:1fr;gap:24px}}
+
+/* claim strip */
+.claims{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);
+        border:1px solid var(--rule);margin:26px 0}
+.claims div{background:var(--card);padding:18px 20px}
+.claims .n{font-family:var(--mono);font-size:11.5px;color:var(--blue);letter-spacing:.1em}
+.claims .t{font-family:var(--cond);font-weight:600;font-size:1.02rem;margin:6px 0 4px}
+.claims .s{font-size:13.5px;color:var(--muted);line-height:1.5}
+@media(max-width:760px){.claims{grid-template-columns:1fr}}
+
+/* figures */
+figure{margin:26px 0 0;background:var(--card);border:1px solid var(--rule);padding:16px}
+figure img{width:100%;height:auto;display:block}
+figcaption{font-family:var(--mono);font-size:12px;color:var(--muted);
+           margin-top:12px;padding-top:11px;border-top:1px solid var(--rule)}
+
+/* tables */
+table{width:100%;border-collapse:collapse;margin:20px 0 0;background:var(--card)}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--rule);font-size:14.5px;vertical-align:top}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+   color:var(--muted);font-weight:500;background:#F7F9FB}
+td.mono{font-family:var(--mono);font-size:13px}
+.pill{font-family:var(--mono);font-size:11.5px;padding:2px 8px;border-radius:2px;white-space:nowrap}
+.pill.allow{background:#E7F1EA;color:var(--seal)}
+.pill.deny{background:#F8E9E7;color:var(--deny)}
+
+/* code block */
+pre{background:var(--card);border:1px solid var(--rule);border-left:3px solid var(--blue);
+    padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13px;
+    line-height:1.7;margin:18px 0}
+code{font-family:var(--mono);font-size:.93em}
+p code,li code{background:#E2E9EE;padding:1px 5px;border-radius:2px}
+
+/* findings */
+.finding{background:var(--card);border:1px solid var(--rule);border-left:3px solid var(--deny);
+         padding:16px 18px;margin:14px 0}
+.finding.note{border-left-color:var(--amber)}
+.finding h3{margin-bottom:5px}
+.finding p{margin:0;font-size:14.5px;color:var(--muted);max-width:none}
+
+/* callout */
+.callout{background:var(--card);border:1px solid var(--rule);padding:22px 24px;margin:26px 0 0}
+.callout p{margin:0;font-size:1.02rem}
+.callout strong{font-family:var(--cond);font-weight:700}
+
+/* list */
+ul.clean{list-style:none;padding:0;margin:14px 0 0}
+ul.clean li{padding:9px 0 9px 22px;border-bottom:1px solid var(--rule);position:relative;
+            font-size:15px;max-width:72ch}
+ul.clean li::before{content:"";position:absolute;left:2px;top:18px;width:8px;height:1.5px;background:var(--blue)}
+ul.clean li strong{font-weight:600}
+
+/* footer */
+footer{border-top:1px solid var(--rule);padding:40px 0 60px;margin-top:20px}
+.links{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:26px}
+.links a{font-family:var(--mono);font-size:13px;text-decoration:none;color:var(--ink);
+         border:1.5px solid var(--ink);padding:9px 16px;transition:background .15s,color .15s}
+.links a:hover,.links a:focus-visible{background:var(--ink);color:var(--paper)}
+.foot-meta{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.8}
+:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="masthead">
+    <span class="mark">PHI LANE GUARD</span>
+    <span class="mast-meta">Proof of concept · Oracle Cloud Infrastructure · us-ashburn-1</span>
+  </div>
+
+  <p class="eyebrow">Regulated AI · Data residency</p>
+  <h1>Residency enforced by<br>topology, not convention</h1>
+  <p class="lede">Model quality is the easy question. <em>Where did the PHI go, and can you prove it?</em> is the one that stops the project. This is a working answer, deployed and exercised end to end.</p>
+
+  <div class="artifact">
+    <div class="artifact-bar">
+      <span>POST /v1/chat/completions</span>
+      <span>gateway :4000</span>
+    </div>
+    <div class="artifact-body" id="art"></div>
+    <div class="artifact-foot">The caller said this request was clean. The gateway checked for itself.</div>
+  </div>
+  <p class="hero-note">Synthetic record. No real patient data was used at any point.</p>
+</header>
+
+<main class="wrap">
+
+<section>
+  <p class="eyebrow">The claim</p>
+  <h2>Three artifacts, thirty seconds</h2>
+  <p>Everything in this build exists to make these three moments real. Two of them are failures.</p>
+  <div class="claims">
+    <div>
+      <div class="n">01</div>
+      <div class="t">PHI to an external model</div>
+      <div class="s">Returns <code>403 POLICY_DENY</code> with reason code <code>PHI_LANE_VIOLATION</code>. No provider is ever contacted.</div>
+    </div>
+    <div>
+      <div class="n">02</div>
+      <div class="t">A caller who says otherwise</div>
+      <div class="s">The same denial, plus <code>claim_overridden: true</code>. Classification does not defer to the header.</div>
+    </div>
+    <div>
+      <div class="n">03</div>
+      <div class="t">The model host, sealed</div>
+      <div class="s"><code>curl</code> to the internet returns <code>BLOCKED</code> — while in-tenancy inference keeps answering.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">The problem</p>
+  <h2>Why regulated AI pilots stall</h2>
+  <div class="two">
+    <div>
+      <p>Today the decision about whether a request carries PHI lives in application code. Each developer reasons about it personally, per service, and that judgement drifts. BAA coverage and residency posture differ per provider, and no application team tracks which is which at call time.</p>
+      <p>When compliance asks for proof that no PHI reached a non-covered provider last quarter, answering means archaeology across service logs.</p>
+    </div>
+    <div>
+      <p>So the safe response is to run everything on in-tenancy models — which sacrifices quality on the majority of requests that never touch patient data at all.</p>
+      <p>The alternative is to move the decision out of application code entirely: classify at the door, enforce with network topology, and record every decision as it happens.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Architecture</p>
+  <h2>What was deployed</h2>
+  <p>Two lanes with genuinely different trust boundaries. The gateway sits in a public subnet and can reach both. The model host sits in a private subnet whose route table is empty. That asymmetry <em>is</em> the control.</p>
+  <figure>
+    <img src="assets/diag_oci_arch.png" alt="OCI architecture: a VCN with a public subnet containing the LiteLLM gateway and PHI classifier, and a private subnet containing an A10 GPU running vLLM with no internet route.">
+    <figcaption>As deployed in us-ashburn-1 AD-1. Route table rt-private-sealed has zero rules.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">Enforcement</p>
+  <h2>How the decision is made</h2>
+  <p>One hook, one policy file, one route table. Classification completes before any provider is contacted, and every branch — allow and deny alike — writes an audit record.</p>
+  <figure>
+    <img src="assets/diag_code_flow.png" alt="Request flow: LiteLLM proxy, pre-call hook, text extraction, Presidio classification, lane resolution, then either a 403 denial or a routed model call, with an audit record written on every branch.">
+    <figcaption>The pre-call hook is the enforcement point. Nothing has left the process when the decision is made.</figcaption>
+  </figure>
+
+  <h3 style="margin-top:34px">Two decisions worth defending</h3>
+  <ul class="clean">
+    <li><strong>Detection is local, not an LLM call.</strong> Sending text to a model to ask whether it contains PHI means the PHI has already left the trust boundary. Presidio runs in-process, baked into the gateway image, with no network dependency — so it cannot fail open because a detection service was unreachable. Measured overhead: about 7&nbsp;ms.</li>
+    <li><strong>The caller's claim is evidence, not authority.</strong> The <code>x-data-class</code> header is recorded, never obeyed. A developer who mislabels a request — carelessly or in good faith — does not thereby widen the egress boundary.</li>
+  </ul>
+
+  <h3 style="margin-top:30px">Policy is data, not code</h3>
+  <p>A privacy officer who cannot read Python can read this, diff it across versions, and see exactly when it changed:</p>
+<pre><code>lanes:
+  in_tenancy:  { phi_permitted: true,  egress: none }
+  frontier:    { phi_permitted: false, egress: internet }
+on_violation: deny</code></pre>
+  <p>Changing one word opens PHI egress with no code change and no rebuild. That is the strength of the design and equally its risk — which is why the enforcement test asserts <code>PHI executed outside the tenancy: 0</code> and belongs in a CI gate blocking merges to that file.</p>
+</section>
+
+<section>
+  <p class="eyebrow">Evidence</p>
+  <h2>Captured from the running system</h2>
+  <table>
+    <thead><tr><th>Scenario</th><th>Caller claim</th><th>Result</th><th>Served by</th></tr></thead>
+    <tbody>
+      <tr><td>Non-PHI → frontier</td><td class="mono">non-phi</td><td><span class="pill allow">200 ALLOW</span></td><td class="mono">external frontier model</td></tr>
+      <tr><td>PHI → in-tenancy</td><td class="mono">phi</td><td><span class="pill allow">200 ALLOW</span></td><td class="mono">Llama-3.1-8B on A10</td></tr>
+      <tr><td>PHI → frontier</td><td class="mono">phi</td><td><span class="pill deny">403 DENY</span></td><td class="mono">—</td></tr>
+      <tr><td>PHI mislabelled</td><td class="mono">non-phi</td><td><span class="pill deny">403 DENY</span></td><td class="mono">— claim overridden</td></tr>
+      <tr><td>model = auto, clean</td><td class="mono">unspecified</td><td><span class="pill allow">200 ALLOW</span></td><td class="mono">policy chose frontier</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top:34px">Network isolation, verified live</h3>
+<pre><code>$ ./03-seal-subnet.sh seal
+  Private subnet is now: SEALED — no internet route
+
+$ ssh -J gateway model 'curl -m 10 https://api.&lt;provider&gt;.com'
+  curl: (7) Network is unreachable
+  BLOCKED
+
+$ python scenarios.py 2          # in-tenancy inference, same moment
+  200 ALLOW  served by: hosted_vllm/meta-llama/Llama-3.1-8B-Instruct</code></pre>
+
+  <h3 style="margin-top:30px">The compliance answer</h3>
+<pre><code>PHI executed outside the tenancy:      0
+Caller data-class claims overridden:   1
+Reason codes:  { OK: 3, PHI_LANE_VIOLATION: 2 }</code></pre>
+  <div class="callout">
+    <p><strong>That first line is the point.</strong> “Did any PHI reach a non-covered provider?” is asked every quarter and today answered by log archaeology. Here it is a query against a structured record written on every branch.</p>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Findings</p>
+  <h2>What broke, and what it means</h2>
+  <p>Naming your own gaps is most of what separates a credible pattern from an oversold prototype. These were found by testing the classifier separately from the pipeline — which is the only reason they were found at all.</p>
+
+  <div class="finding">
+    <h3>Silent detection miss</h3>
+    <p>Presidio's phone recognizer returns a flat 0.4 confidence for US numbers regardless of format — below the 0.5 global floor. Phone numbers were being missed with no error, no warning, no log line. Fixed with a per-entity threshold in <code>policy.yaml</code>. The dangerous failure in a safety system is not the crash; it is the silence.</p>
+  </div>
+  <div class="finding">
+    <h3>Wrong identifier attribution</h3>
+    <p>A test SSN matched as <code>PHONE_NUMBER</code> rather than <code>US_SSN</code>. The routing decision was still correct, but the audit record named the wrong identifier class — which matters when that record <em>is</em> the compliance artifact.</p>
+  </div>
+  <div class="finding note">
+    <h3>Deliberate over-denial</h3>
+    <p>A hospital staff phone number classifies as PHI. So does a bare clinician name. Neither is patient information. The system over-denies rather than under-denies, which is the correct direction for a control — but production needs context rules, an allow-list, and a documented exception path.</p>
+  </div>
+  <div class="finding note">
+    <h3>Site-specific identifiers are invisible</h3>
+    <p>A trial subject ID (“Subject 0042 in cohort B…”) passes undetected, because Presidio ships recognizers for universal identifiers only. The MRN recognizer here is hand-written for exactly that reason. This is the honest answer to “would this work for our data?” — universal identifiers work out of the box; your formats are a scoping conversation.</p>
+  </div>
+
+  <h3 style="margin-top:34px">Platform notes</h3>
+  <table>
+    <tbody>
+      <tr><td style="width:30%"><strong>Boot volume</strong></td><td>Allocating 200&nbsp;GB does not grow the filesystem. <code>oci-growfs</code> must run before pulling large images; the vLLM image alone exceeds the default root.</td></tr>
+      <tr><td><strong>GPU image</strong></td><td>The A10 shape lookup returned an Oracle Linux 7 build. Podman 1.6.4 predates CDI, so <code>nvidia.com/gpu=all</code> fails; the legacy NVIDIA OCI prestart hook works.</td></tr>
+      <tr><td><strong>Quota vs capacity</strong></td><td>Quota granted at tenancy scope is not capacity available in a given availability domain. Verify the specific AD, not the general limit.</td></tr>
+      <tr><td><strong>Retention lock</strong></td><td>OCI retention rules can be locked, after which the bucket cannot be deleted until the period expires. Left unlocked here deliberately.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top:30px">Scope boundaries</h3>
+  <ul class="clean">
+    <li><strong>Not HIPAA Safe Harbor.</strong> Safe Harbor enumerates 18 identifier classes; this detects a subset. Imagery, biometrics and device identifiers are out of scope entirely.</li>
+    <li><strong>The de-identification lane is a stub.</strong> <code>deid_applied</code> is always false. The architecture has the seam; the implementation does not fill it.</li>
+    <li><strong>No HA.</strong> Single gateway instance, single model host. This proves a control surface, not an SLA.</li>
+    <li><strong>Enforcement, not certification.</strong> This enforces where inference runs and records what happened. BAA coverage, clinical validation and the de-identification method remain the customer's responsibility.</li>
+  </ul>
+</section>
+
+<section>
+  <p class="eyebrow">Generalization</p>
+  <h2>The same shape, a different policy file</h2>
+  <p>PHI is one instance of a pattern that recurs across every regulated conversation: classify at the door, enforce with topology, record the decision.</p>
+  <table>
+    <tbody>
+      <tr><td style="width:32%"><strong>Data residency</strong></td><td>EU and sovereign workloads pinned to in-region execution; everything else free to route</td></tr>
+      <tr><td><strong>Export control</strong></td><td>ITAR / EAR-controlled technical data restricted to a tenancy-bound lane</td></tr>
+      <tr><td><strong>Financial services</strong></td><td>Material non-public information barred from external providers</td></tr>
+      <tr><td><strong>Multi-tenant SaaS</strong></td><td>Per-tenant isolation where one customer's data may never transit a shared model</td></tr>
+      <tr><td><strong>Source code</strong></td><td>Proprietary code excluded from external inference while docs and tickets route freely</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <p><strong>Built in one afternoon by one engineer</strong>, including three platform defects worked around live. That is only worth something if the next engineer does not have to rediscover it — which is the argument for making it a field pattern rather than a demo.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="wrap">
+  <div class="links">
+    <a href="https://github.com/dkhopade/phi-lane-guard">Source on GitHub</a>
+    <a href="https://github.com/dkhopade/phi-lane-guard#readme">Build guide</a>
+    <a href="https://github.com/dkhopade/phi-lane-guard/blob/main/docs/readout.md">Readout notes</a>
+  </div>
+  <p class="foot-meta">
+    Deepak Khopade · Master Principal Cloud Architect, Oracle<br>
+    LiteLLM 1.63.11 · Presidio 2.2.355 · vLLM 0.27.1 · Llama-3.1-8B-Instruct · VM.GPU.A10.1<br>
+    Synthetic data throughout. Not affiliated with or endorsed by any named vendor.
+  </p>
+</footer>
+
+<script>
+const lines = [
+  ['<span class="k">POST</span> /v1/chat/completions',0],
+  ['<span class="k">x-data-class:</span> <span class="claim">non-phi</span>          <span class="k">← the caller\'s assertion</span>',1],
+  ['<span class="k">model:</span> frontier-claude',2],
+  ['<span class="k">body:</span> "Patient Marcus Delgado, MRN 4471822, DOB 1968-03-14,',3],
+  ['        reachable at 919-555-0177. Echo shows EF 38%…"',3],
+  ['&nbsp;',4],
+  ['<span class="k">→ classify() in-process · 7ms · nothing has left yet</span>',5],
+  ['&nbsp;',6],
+  ['<span class="deny">403 POLICY_DENY</span>',7],
+  ['  reason_code:        <span class="deny">PHI_LANE_VIOLATION</span>',8],
+  ['  detected:           MRN, PERSON, PHONE_NUMBER, DATE_TIME',9],
+  ['  claimed_data_class: <span class="strike claim">non-phi</span>',10],
+  ['  claim_overridden:   <span class="deny">true</span>',11],
+  ['  compliant_lane:     <span class="ok">in_tenancy</span>',12]
+];
+const el = document.getElementById('art');
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+lines.forEach(([html, step]) => {
+  const s = document.createElement('span');
+  s.className = 'ln';
+  s.innerHTML = html;
+  if (!reduce) s.style.animationDelay = (step * 0.16 + 0.25) + 's';
+  el.appendChild(s);
+});
+</script>
+</body>
+</html>

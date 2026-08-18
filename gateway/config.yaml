@@ -1,0 +1,32 @@
+# ---------------------------------------------------------------------------
+# LiteLLM proxy configuration.
+#
+# Two lanes, two trust boundaries. The lane membership here must match
+# policy.yaml — policy.yaml decides what is allowed, this decides how to
+# reach it.
+# ---------------------------------------------------------------------------
+
+model_list:
+  # ---- IN-TENANCY LANE -----------------------------------------------------
+  # vLLM on a GPU instance in a private subnet with no internet route.
+  # Reached over the VCN by private IP. Substitute your GPU host IP.
+  - model_name: intenancy-llama
+    litellm_params:
+      model: hosted_vllm/meta-llama/Llama-3.1-8B-Instruct
+      api_base: os.environ/VLLM_API_BASE
+      api_key: "not-required"
+
+  # ---- FRONTIER LANE -------------------------------------------------------
+  # External provider over the public internet. Non-PHI only.
+  - model_name: frontier-claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  callbacks: hooks.phi_guard.phi_guard
+  drop_params: true
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
