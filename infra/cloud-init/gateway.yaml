@@ -1,0 +1,82 @@
+#cloud-config
+# ---------------------------------------------------------------------------
+# phi-gateway — LiteLLM + PHILaneGuard bootstrap.
+#
+# Encodes the workarounds found during the first manual build:
+#   1. no compose      — OL8 ships python3.6, which cannot run current
+#                        podman-compose (SyntaxError on the walrus operator).
+#                        Plain podman has fewer moving parts.
+#   2. audit dir       — older podman will not auto-create a bind-mount source
+#   3. model by DNS    — VLLM_API_BASE uses the VCN's internal DNS name, not an
+#                        IP. The model host's private IP changes on every
+#                        rebuild; the DNS name does not. This is the permanent
+#                        fix for the silent-timeout bug.
+#
+# Writes /var/tmp/phi-gateway-ready when the proxy answers readiness.
+# ---------------------------------------------------------------------------
+write_files:
+  - path: /opt/phi/bootstrap.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -uo pipefail
+      exec > >(tee -a /var/log/phi-bootstrap.log) 2>&1
+      echo "=== phi-gateway bootstrap $(date -u) ==="
+
+      REPO="__REPO__"
+      BRANCH="__BRANCH__"
+      MASTER_KEY="__MASTER_KEY__"
+      PROVIDER_KEY="__PROVIDER_KEY__"
+      MODEL_FQDN="__MODEL_FQDN__"
+      REGION="__REGION__"
+
+      echo "--- [1/5] packages"
+      dnf install -y git podman podman-docker >/dev/null 2>&1 \
+        || yum install -y git podman podman-docker >/dev/null 2>&1
+      podman --version
+
+      echo "--- [2/5] fetching the gateway source"
+      rm -rf /opt/phi/src
+      git clone --depth 1 --branch "$BRANCH" "$REPO" /opt/phi/src
+      cd /opt/phi/src/gateway
+
+      echo "--- [3/5] writing .env (model addressed by VCN DNS, not IP)"
+      mkdir -p audit
+      cat > .env <<ENVEOF
+      LITELLM_MASTER_KEY=$MASTER_KEY
+      ANTHROPIC_API_KEY=$PROVIDER_KEY
+      VLLM_API_BASE=http://$MODEL_FQDN:8000/v1
+      OCI_REGION=$REGION
+      ENVEOF
+      chmod 600 .env
+
+      echo "--- [4/5] building the gateway image (spaCy model is ~590 MB)"
+      podman build -t phi-gateway . || { echo "BUILD FAILED"; exit 1; }
+
+      echo "--- [5/5] starting the proxy"
+      podman rm -f phi-gateway >/dev/null 2>&1 || true
+      podman run -d --name phi-gateway \
+        -p 4000:4000 \
+        --env-file .env \
+        -e POLICY_PATH=/app/policy.yaml \
+        -e AUDIT_PATH=/app/audit/audit.jsonl \
+        -v /opt/phi/src/gateway/audit:/app/audit:Z \
+        localhost/phi-gateway:latest
+
+      echo "--- waiting for readiness"
+      for i in $(seq 1 60); do
+        if curl -sf localhost:4000/health/readiness | grep -q PHILaneGuard; then
+          echo "READY after ${i} checks — PHILaneGuard hook registered"
+          date -u > /var/tmp/phi-gateway-ready
+          curl -s localhost:4000/health/readiness >> /var/tmp/phi-gateway-ready
+          exit 0
+        fi
+        sleep 10
+      done
+      echo "TIMED OUT. Inspect: podman logs phi-gateway"
+      exit 1
+
+runcmd:
+  - [ /opt/phi/bootstrap.sh ]
+
+final_message: "phi-gateway cloud-init finished after $UPTIME seconds"

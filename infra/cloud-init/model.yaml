@@ -1,0 +1,91 @@
+#cloud-config
+# ---------------------------------------------------------------------------
+# phi-model — GPU inference host bootstrap.
+#
+# Encodes every workaround discovered during the first manual build:
+#   1. oci-growfs      — a 200 GB boot volume does not expand its own filesystem
+#   2. NVIDIA toolkit  — the A10 image may be OL7 with podman 1.6.4, which
+#                        predates CDI; the legacy prestart hook works on both
+#   3. hfcache dir     — older podman will not auto-create a bind-mount source
+#
+# Writes /var/tmp/phi-model-ready when vLLM answers, so status.sh can poll
+# instead of you guessing.
+# ---------------------------------------------------------------------------
+write_files:
+  - path: /opt/phi/bootstrap.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -uo pipefail
+      exec > >(tee -a /var/log/phi-bootstrap.log) 2>&1
+      echo "=== phi-model bootstrap $(date -u) ==="
+
+      MODEL="__MODEL__"
+      HF_TOKEN="__HF_TOKEN__"
+
+      echo "--- [1/6] growing filesystem to the full boot volume"
+      /usr/libexec/oci-growfs -y || true
+      df -h /
+
+      echo "--- [2/6] container runtime"
+      (yum install -y podman || dnf install -y podman) >/dev/null 2>&1
+      podman --version
+
+      echo "--- [3/6] NVIDIA container toolkit"
+      (yum install -y nvidia-container-toolkit || dnf install -y nvidia-container-toolkit) >/dev/null 2>&1
+
+      echo "--- [4/6] legacy OCI prestart hook (works on podman 1.6+ and CDI-era)"
+      mkdir -p /usr/share/containers/oci/hooks.d
+      cat > /usr/share/containers/oci/hooks.d/oci-nvidia-hook.json <<'HOOK'
+      {
+        "version": "1.0.0",
+        "hook": {
+          "path": "/usr/bin/nvidia-container-runtime-hook",
+          "args": ["nvidia-container-runtime-hook", "prestart"],
+          "env": []
+        },
+        "when": { "always": true, "commands": [".*"] },
+        "stages": ["prestart"]
+      }
+      HOOK
+      # Also generate a CDI spec where the tooling supports it. Harmless if not.
+      mkdir -p /etc/cdi
+      nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml >/dev/null 2>&1 || true
+
+      echo "--- [5/6] firewall: :8000 open to the VCN only, never the internet"
+      firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=10.0.0.0/16 port port=8000 protocol=tcp accept' || true
+      firewall-cmd --reload || true
+
+      echo "--- [6/6] starting vLLM (weights pull runs 15-25 min on first boot)"
+      mkdir -p /home/opc/hfcache
+      chown opc:opc /home/opc/hfcache
+      podman rm -f vllm >/dev/null 2>&1 || true
+      podman run -d --name vllm \
+        --security-opt=label=disable \
+        -e NVIDIA_VISIBLE_DEVICES=all \
+        -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+        -e HF_TOKEN="$HF_TOKEN" \
+        -p 8000:8000 \
+        -v /home/opc/hfcache:/root/.cache/huggingface:Z \
+        docker.io/vllm/vllm-openai:latest \
+        --model "$MODEL" \
+        --max-model-len 8192 \
+        --gpu-memory-utilization 0.90
+
+      echo "--- waiting for the model to answer"
+      for i in $(seq 1 120); do
+        if curl -sf localhost:8000/v1/models >/dev/null 2>&1; then
+          echo "READY after ${i} checks"
+          date -u > /var/tmp/phi-model-ready
+          echo "$MODEL" >> /var/tmp/phi-model-ready
+          exit 0
+        fi
+        sleep 30
+      done
+      echo "TIMED OUT waiting for vLLM. Inspect: podman logs vllm"
+      exit 1
+
+runcmd:
+  - [ /opt/phi/bootstrap.sh ]
+
+final_message: "phi-model cloud-init finished after $UPTIME seconds"
