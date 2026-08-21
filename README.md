@@ -241,6 +241,31 @@ bucket** — neither is removed automatically.
 
 ---
 
+## Defects found on a real cloud-init boot
+
+Both were found by running the automation end to end rather than reasoning about
+it, which is the argument for testing a rebuild before you need one.
+
+1. **firewalld hangs, it does not fail.** Cloud-init runs early enough that
+   firewalld may not be answering on D-Bus yet. `firewall-cmd` then blocks on an
+   Introspect timeout instead of returning non-zero — and `|| true` catches a bad
+   exit code, not a hang. The model bootstrap stalled at stage 5 for an hour and
+   never started the container. Fixed by enabling the service, polling
+   `firewall-cmd --state` until it answers, and wrapping every call in
+   `timeout`. Every long-running install in both bootstraps now has a timeout
+   for the same reason.
+
+2. **`terminate --wait-for-state TERMINATED` is invalid.** The CLI waits on the
+   *work request*, not the instance, so the accepted values are
+   `SUCCEEDED`/`FAILED`. `teardown.sh` exited on an argument error before
+   deleting anything — a teardown script that silently does nothing is the
+   worst possible failure mode when a GPU is billing. Fixed, and
+   `--preserve-boot-volume false` added so the 200 GB volume goes with it.
+
+The general shape is the same one the classifier bug had: **the dangerous
+failure is the silent one.** A crash tells you. A hang, or a script that exits
+before doing its work, does not.
+
 ## Honest limitations — say these before you are asked
 
 Being first to your own gaps is most of what separates a credible field PoC from

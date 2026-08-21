@@ -28,11 +28,11 @@ write_files:
       df -h /
 
       echo "--- [2/6] container runtime"
-      (yum install -y podman || dnf install -y podman) >/dev/null 2>&1
+      timeout 600 bash -c '(yum install -y podman || dnf install -y podman)' >/dev/null 2>&1
       podman --version
 
       echo "--- [3/6] NVIDIA container toolkit"
-      (yum install -y nvidia-container-toolkit || dnf install -y nvidia-container-toolkit) >/dev/null 2>&1
+      timeout 600 bash -c '(yum install -y nvidia-container-toolkit || dnf install -y nvidia-container-toolkit)' >/dev/null 2>&1
 
       echo "--- [4/6] legacy OCI prestart hook (works on podman 1.6+ and CDI-era)"
       mkdir -p /usr/share/containers/oci/hooks.d
@@ -53,8 +53,31 @@ write_files:
       nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml >/dev/null 2>&1 || true
 
       echo "--- [5/6] firewall: :8000 open to the VCN only, never the internet"
-      firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=10.0.0.0/16 port port=8000 protocol=tcp accept' || true
-      firewall-cmd --reload || true
+      # DEFECT FOUND ON A REAL BOOT: cloud-init runs early enough that firewalld
+      # may not be listening on D-Bus yet. firewall-cmd then HANGS on an
+      # Introspect timeout rather than failing -- and "|| true" catches a bad
+      # exit code, not a hang. Bootstrap stalled here indefinitely and the
+      # container was never started.
+      #
+      # Fix has three parts: ensure the service is up, wait for D-Bus to answer,
+      # and wrap every call in a hard timeout so a hang can never block the run.
+      systemctl enable --now firewalld >/dev/null 2>&1 || true
+      for i in $(seq 1 30); do
+        timeout 5 firewall-cmd --state >/dev/null 2>&1 && break
+        sleep 2
+      done
+
+      if timeout 15 firewall-cmd --permanent \
+           --add-rich-rule='rule family=ipv4 source address=10.0.0.0/16 port port=8000 protocol=tcp accept' >/dev/null 2>&1; then
+        timeout 15 firewall-cmd --reload >/dev/null 2>&1 || true
+        echo "    firewalld rule applied"
+      else
+        # Never leave :8000 world-open. The subnet has no internet route, and
+        # the security list already restricts ingress, but say so explicitly
+        # rather than let a silent failure look like success.
+        echo "    WARNING: firewalld unavailable; relying on the security list"
+        echo "    and the private subnet's empty route table for isolation."
+      fi
 
       echo "--- [6/6] starting vLLM (weights pull runs 15-25 min on first boot)"
       mkdir -p /home/opc/hfcache

@@ -31,8 +31,8 @@ write_files:
       REGION="__REGION__"
 
       echo "--- [1/5] packages"
-      dnf install -y git podman podman-docker >/dev/null 2>&1 \
-        || yum install -y git podman podman-docker >/dev/null 2>&1
+      timeout 900 bash -c 'dnf install -y git podman podman-docker \
+        || yum install -y git podman podman-docker' >/dev/null 2>&1
       podman --version
 
       echo "--- [2/5] fetching the gateway source"

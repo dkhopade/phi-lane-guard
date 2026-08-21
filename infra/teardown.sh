@@ -11,12 +11,18 @@ STATE="$(dirname "$0")/.state"; source "$STATE"
 say() { printf '\n\033[1;33m==> %s\033[0m\n' "$*"; }
 
 say "Terminating GPU instance (stops the meter)"
+# NOTE: terminate waits on the WORK REQUEST, not the instance, so the valid
+# states are SUCCEEDED/FAILED -- not TERMINATED. Getting this wrong makes the
+# whole script exit with an argument error before deleting anything.
+# --preserve-boot-volume false is what stops an orphaned volume billing on.
 oci compute instance terminate --instance-id "$GPU_ID" --force \
-  --wait-for-state TERMINATED 2>/dev/null || echo "  already gone"
+  --preserve-boot-volume false \
+  --wait-for-state SUCCEEDED 2>/dev/null || echo "  already gone"
 
 say "Terminating gateway instance"
 oci compute instance terminate --instance-id "$GW_ID" --force \
-  --wait-for-state TERMINATED 2>/dev/null || echo "  already gone"
+  --preserve-boot-volume false \
+  --wait-for-state SUCCEEDED 2>/dev/null || echo "  already gone"
 
 say "Deleting subnets"
 for s in "$SUBNET_PRIV" "$SUBNET_PUB"; do
