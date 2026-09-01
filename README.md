@@ -51,6 +51,18 @@ control.
 > private subnet, `PHI executed outside the tenancy: 0`. Write-up:
 > <https://dkhopade.github.io/phi-lane-guard/>
 
+## Two phases
+
+| Phase | What it is | Where |
+|---|---|---|
+| **1 · Proof of concept** | Purpose-built gateway on OCI. Two lanes, sealed private subnet, the control proved end to end. | this directory |
+| **2 · Native guardrail** | The same control as a registered LiteLLM `CustomGuardrail` — the way a real platform would consume it. | [`litellm-guardrail/`](litellm-guardrail/) |
+| **Deployment** | Running it inside an existing LiteLLM on Kubernetes. | [`oke/`](oke/) |
+| **Findings** | What testing surfaced that documentation did not. | [`findings/`](findings/) |
+
+Phase 1 answers *can this control be built?* Phase 2 answers *does it survive
+contact with the platform it has to live in?*
+
 ## Prerequisites
 
 - OCI CLI configured (`oci setup config`), A10 quota confirmed
@@ -89,80 +101,94 @@ route table you can show on screen, not a line of code someone has to trust.
 
 ---
 
-## Step 2 — Launch both instances (unattended)
-
-Set five variables, then one command:
+## Step 2 — Launch the instances
 
 ```bash
-export LITELLM_MASTER_KEY=sk-poc-demo      # invent this
-export ANTHROPIC_API_KEY=<your key>        # or a placeholder
-export HF_TOKEN=<your hf token>            # gated Llama repos
 ./02-instances.sh
 ```
 
-**Expect:** both instances RUNNING in about 8 minutes, then configuring
-themselves. Nothing to SSH into.
+**Expect:** a gateway VM with a public IP and a GPU VM with a private IP only.
+Five to ten minutes. **The GPU meter starts here.**
 
-**Why this matters:** the launcher renders `infra/cloud-init/*.yaml` with your
-secrets and passes them as user-data. Every workaround found during the first
-manual build is encoded there — `oci-growfs`, the NVIDIA prestart hook, the
-`hfcache` directory, skipping compose. You do not rediscover them.
-
-Two things the launcher does that are easy to miss:
-
-- **It unseals the private subnet if needed.** The model host must reach the
-  internet to pull weights. Launching into a sealed subnet fails silently and
-  slowly.
-- **It sets `--hostname-label`**, so the model host is reachable at
-  `phi-model.private.phipoc.oraclevcn.com`. The gateway addresses the model by
-  that name, never by IP. Private IPs change on every rebuild; this does not.
-  That single change removes the most common failure in this build.
-
-> **Secrets caveat, stated plainly:** cloud-init user-data lives in instance
-> metadata and is readable by anyone with access to the instance. Fine for a
-> PoC; not fine for production, where these belong in OCI Vault read via an
-> instance principal.
+**Why this matters:** the GPU instance is launched with `--assign-public-ip
+false` into a subnet created with `--prohibit-public-ip-on-vnic true`. Even if
+someone later attaches an internet route, no public address exists on that VNIC.
+Two independent controls, which is what a security reviewer wants to see.
 
 ---
 
-## Step 3 — Wait for readiness
+## Step 3 — Bring up vLLM (while egress still exists)
 
 ```bash
-./status.sh --watch
+source infra/.state
+scp model/vllm-up.sh opc@$GW_IP:~/            # stage via the gateway
+ssh opc@$GW_IP "scp vllm-up.sh opc@$GPU_IP:~/"
+ssh -J opc@$GW_IP opc@$GPU_IP
+export HF_TOKEN=hf_xxxxx
+./vllm-up.sh
 ```
 
-**Expect:** gateway READY in 6–9 minutes, model in 20–30 on a cold boot volume.
-The watch exits when both markers exist.
+**Expect:** `nvidia-smi` shows one A10. Weights download runs 10–20 minutes.
+Watch `sudo podman logs -f vllm` until `Application startup complete`.
 
-**Why a marker and not a port check:** cloud-init writes
-`/var/tmp/phi-*-ready` only after the service actually answers — the gateway
-after `PHILaneGuard` appears in its readiness payload, the model after
-`/v1/models` responds. That reports what the host achieved, not merely that it
-booted.
+**Why this matters:** order is deliberate. Pull the weights *before* sealing. A
+common failure in demos like this is sealing first, then discovering the model
+host can't fetch anything — you then either unseal in front of the audience or
+lose the demo. Do the irreversible-looking step last.
 
-If something stalls:
-
+**Verify before moving on:**
 ```bash
-source .state
-ssh opc@$GW_IP 'tail -30 /var/log/phi-bootstrap.log'
-ssh -J opc@$GW_IP opc@$GPU_IP 'tail -30 /var/log/phi-bootstrap.log'
+curl -s localhost:8000/v1/models | head
 ```
 
 ---
 
-## Step 4 — Load the demo environment
+## Step 4 — Deploy the gateway
 
 ```bash
-cd .. && source demoenv.sh
+exit   # back to your laptop
+scp -r gateway opc@$GW_IP:~/phi-gateway
+ssh opc@$GW_IP
+sudo dnf install -y docker podman-docker
+cd phi-gateway
+cp .env.example .env
 ```
 
-**Expect:** the gateway URL, model FQDN, and a truncated key. Run this in every
-new shell — losing these exports is the most common self-inflicted delay.
+Edit `.env`: set `ANTHROPIC_API_KEY`, set `VLLM_API_BASE=http://<GPU_IP>:8000/v1`,
+set a `LITELLM_MASTER_KEY`.
+
+```bash
+./run-podman.sh
+```
+
+> **Gotcha:** on Oracle Linux 8, `docker compose` is absent and `podman-compose`
+> installs but will not run — OL8 ships python3.6, which raises a `SyntaxError`
+> on the walrus operator in current podman-compose. `run-podman.sh` skips compose
+> entirely. Also create `./audit` first; older podman will not auto-create a
+> bind-mount source directory.
+
+**Expect:** the build takes several minutes (spaCy's `en_core_web_lg` is ~500 MB).
+Look for LiteLLM binding on `0.0.0.0:4000`.
+
+**Why this matters:** the Presidio model ships *inside* the gateway image. The
+classifier has no network dependency — it cannot fail open because a
+classification service was unreachable. If detection dies, the container dies,
+and nothing routes.
+
+**Verify:**
+```bash
+curl -s localhost:4000/health/readiness
+```
+
+---
 
 ## Step 5 — Rehearse both lanes, unsealed
 
 ```bash
+# from your laptop
 cd demo && pip install -r requirements.txt
+export GATEWAY=http://$GW_IP:4000
+export LITELLM_MASTER_KEY=<the key you set>
 python scenarios.py 1 2
 ```
 
@@ -241,31 +267,6 @@ bucket** — neither is removed automatically.
 
 ---
 
-## Defects found on a real cloud-init boot
-
-Both were found by running the automation end to end rather than reasoning about
-it, which is the argument for testing a rebuild before you need one.
-
-1. **firewalld hangs, it does not fail.** Cloud-init runs early enough that
-   firewalld may not be answering on D-Bus yet. `firewall-cmd` then blocks on an
-   Introspect timeout instead of returning non-zero — and `|| true` catches a bad
-   exit code, not a hang. The model bootstrap stalled at stage 5 for an hour and
-   never started the container. Fixed by enabling the service, polling
-   `firewall-cmd --state` until it answers, and wrapping every call in
-   `timeout`. Every long-running install in both bootstraps now has a timeout
-   for the same reason.
-
-2. **`terminate --wait-for-state TERMINATED` is invalid.** The CLI waits on the
-   *work request*, not the instance, so the accepted values are
-   `SUCCEEDED`/`FAILED`. `teardown.sh` exited on an argument error before
-   deleting anything — a teardown script that silently does nothing is the
-   worst possible failure mode when a GPU is billing. Fixed, and
-   `--preserve-boot-volume false` added so the 200 GB volume goes with it.
-
-The general shape is the same one the classifier bug had: **the dangerous
-failure is the silent one.** A crash tells you. A hang, or a script that exits
-before doing its work, does not.
-
 ## Honest limitations — say these before you are asked
 
 Being first to your own gaps is most of what separates a credible field PoC from
@@ -312,10 +313,7 @@ adding a managed model is a `model_list` entry and a line in `policy.yaml`.
 
 ```
 infra/01-network.sh       VCN, subnets, the two route tables
-infra/02-instances.sh     launches both VMs with cloud-init; nothing manual after
-infra/cloud-init/         self-configuration for each host, workarounds encoded
-infra/status.sh           poll readiness markers written by cloud-init
-demoenv.sh                source this in any new shell before demoing
+infra/02-instances.sh     gateway VM + A10 GPU VM
 infra/03-seal-subnet.sh   seal | unseal — the demo switch
 infra/04-audit-bucket.sh  versioned bucket + retention rule (unlocked, on purpose)
 infra/05-push-audit.sh    ship audit records to Object Storage

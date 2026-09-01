@@ -1,0 +1,16 @@
+# Alternative to `kubectl create configmap --from-file`. Keep policy.yaml as
+# the source of truth in git; this is a rendered artifact.
+#
+#   kubectl -n <ns> create configmap phi-lane-policy \
+#     --from-file=policy.yaml=k8s/policy.yaml --dry-run=client -o yaml \
+#     > k8s/configmap-policy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: phi-lane-policy
+data:
+  policy.yaml: |
+    # Replace with the contents of k8s/policy.yaml, edited for your models.
+    lanes:
+      phi_permitted_models:
+        - CHANGE-ME-to-your-in-tenancy-model-name

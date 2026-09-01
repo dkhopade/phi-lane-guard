@@ -327,6 +327,70 @@ Reason codes:  { OK: 3, PHI_LANE_VIOLATION: 2 }</code></pre>
   </ul>
 </section>
 
+
+<section>
+  <p class="eyebrow">Phase two</p>
+  <h2>The same control, native to the platform</h2>
+  <p>The proof above uses a purpose-built gateway. The next question was whether the same control survives being implemented the way a real platform would consume it — as a registered guardrail inside LiteLLM, rather than a bolted-on callback.</p>
+  <p>It does. Classification runs in-process before egress, PHI-bearing requests to non-permitted models are denied, and the platform records the intervention itself. Steady-state overhead is under 6&nbsp;ms.</p>
+
+  <h3 style="margin-top:30px">What the platform records, and what it doesn't</h3>
+  <table>
+    <thead><tr><th>Audit element</th><th>Recorded by</th></tr></thead>
+    <tbody>
+      <tr><td>Which guardrail fired, status, duration</td><td class="mono">LiteLLM, natively</td></tr>
+      <tr><td>Reason code, detected entities, overridden claim</td><td class="mono">the guardrail — redacted by design</td></tr>
+    </tbody>
+  </table>
+  <p>The platform stores <code>guardrail_response: "REDACTED_BY_LITELM"</code>, which is a sound default — a guardrail's response could echo the very content it exists to protect. The consequence is a clean split: the platform supplies the execution record, the guard supplies the compliance reasoning, and they join on request ID.</p>
+
+  <h3 style="margin-top:30px">Config is the right home for a compliance control</h3>
+  <ul class="clean">
+    <li><strong>A config-defined guardrail cannot be disabled from the console.</strong> No toggle exists in the UI.</li>
+    <li><strong>It cannot be shadowed.</strong> Creating a same-named guardrail through the console does not override or replace it.</li>
+    <li><strong>The policy file is invisible to the UI.</strong> It stays a version-controlled artifact a privacy officer can review, outside the console's reach.</li>
+  </ul>
+  <p>That is specific to guardrails, and worth stating precisely rather than generalising — <code>store_prompts_in_spend_logs</code> behaves the opposite way, and can be set in the console to override config.</p>
+</section>
+
+<section>
+  <p class="eyebrow">Finding</p>
+  <h2>The control plane is in scope</h2>
+  <p>The gateway's database holds keys, teams, spend and model configuration. It can also hold request and response content. The default is safe — but the setting that changes it is a console click, and the content lands somewhere the documentation doesn't name.</p>
+
+  <div class="finding">
+    <h3>Verification returns a false negative</h3>
+    <p>With prompt storage enabled, content is written to <code>proxy_server_request</code> and <code>response</code> — not the <code>messages</code> column the docs point at. A compliance query against <code>messages</code> comes back clean while the full prompt, including patient identifiers, sits two columns over.</p>
+  </div>
+  <div class="finding">
+    <h3>The toggle overrides config</h3>
+    <p>Setting it in the config file requires a restart. Setting it in the Admin UI does not, and the console value wins. A deployment whose config was reviewed and approved can be changed without a diff, a deployment, or a change-control record. The operative control is admin RBAC, not config review.</p>
+  </div>
+  <div class="finding note">
+    <h3>Behaviour varies by version</h3>
+    <p>Upstream reports on earlier releases describe the same setting storing nothing at all. On the version tested, it stores content in unexpected columns. Neither default is safe to assume — pin a version and verify on it.</p>
+  </div>
+  <p><strong>The recommendation:</strong> treat the control-plane database as in scope for regulated data regardless of configuration, and audit it column-agnostically rather than against the documented field.</p>
+</section>
+
+<section>
+  <p class="eyebrow">The pattern</p>
+  <h2>The dangerous failure is the silent one</h2>
+  <p>Five independent failures surfaced across this work. None of them announced itself. Every one looked like success from the outside.</p>
+  <table>
+    <tbody>
+      <tr><td style="width:38%"><strong>A classifier below its threshold</strong></td><td>Presidio's phone recognizer returns a flat 0.4 for US numbers, under the 0.5 default. Phone numbers were undetected. No error, no warning.</td></tr>
+      <tr><td><strong>A firewall command that hangs</strong></td><td>Called before the service answered on D-Bus, it blocked indefinitely — and <code>|| true</code> catches a bad exit code, not a hang.</td></tr>
+      <tr><td><strong>A teardown that tears nothing down</strong></td><td>An invalid wait-state argument meant the script exited before deleting anything, while a GPU kept billing.</td></tr>
+      <tr><td><strong>A query reading the wrong column</strong></td><td>The documented field stays empty while the content is stored elsewhere in the same row.</td></tr>
+      <tr><td><strong>A test panel reporting a false pass</strong></td><td>The console calls an interface the base class implements as a no-op, so it reports content allowed while the API denies it.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <p><strong>A crash tells you. A hang, a default that returns nothing, or a check that reads the wrong field does not.</strong> This is the argument for testing a control through the path it will actually be exercised on, rather than the path that is convenient to click.</p>
+  </div>
+</section>
+
 <section>
   <p class="eyebrow">Generalization</p>
   <h2>The same shape, a different policy file</h2>
@@ -351,11 +415,12 @@ Reason codes:  { OK: 3, PHI_LANE_VIOLATION: 2 }</code></pre>
   <div class="links">
     <a href="https://github.com/dkhopade/phi-lane-guard">Source on GitHub</a>
     <a href="https://github.com/dkhopade/phi-lane-guard#readme">Build guide</a>
-    <a href="https://github.com/dkhopade/phi-lane-guard/blob/main/docs/readout.md">Readout notes</a>
+    <a href="https://github.com/dkhopade/phi-lane-guard/tree/main/litellm-guardrail">LiteLLM guardrail</a>
+    <a href="https://github.com/dkhopade/phi-lane-guard/tree/main/findings">Findings</a>
   </div>
   <p class="foot-meta">
     Deepak Khopade · Master Principal Cloud Architect, Oracle<br>
-    LiteLLM 1.63.11 · Presidio 2.2.355 · vLLM 0.27.1 · Llama-3.1-8B-Instruct · VM.GPU.A10.1<br>
+    LiteLLM 1.63.11 &amp; 1.98.0 · Presidio 2.2.355 · vLLM 0.27.1 · Llama-3.1-8B-Instruct · VM.GPU.A10.1 · OKE<br>
     Synthetic data throughout. Not affiliated with or endorsed by any named vendor.
   </p>
 </footer>

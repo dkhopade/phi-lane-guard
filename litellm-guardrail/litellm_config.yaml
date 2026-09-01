@@ -1,0 +1,16 @@
+# ---------------------------------------------------------------------------
+# Proxy config. Models live in Postgres (STORE_MODEL_IN_DB), so model_list is
+# intentionally absent - the models added through the UI are unaffected.
+# ---------------------------------------------------------------------------
+
+guardrails:
+  - guardrail_name: "phi-lane-guard"
+    litellm_params:
+      guardrail: phi_guardrail.PHILaneGuard
+      mode: "pre_call"          # runs before the request leaves the proxy
+      default_on: true          # applies to every request, not opt-in
+
+general_settings:
+  # Left off deliberately. Turning this on persists prompt and response content
+  # to Postgres - see the control-plane finding.
+  store_prompts_in_spend_logs: false

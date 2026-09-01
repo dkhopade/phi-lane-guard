@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------------------
+# Equivalent for a Helm-deployed LiteLLM. Merge into your values file - key
+# names vary by chart version, so check yours before applying wholesale.
+# ---------------------------------------------------------------------------
+image:
+  repository: <region>.ocir.io/<namespace>/phi-lane-guard
+  tag: "1.0.0"
+
+envVars:
+  PYTHONPATH: /app/guardrails
+  PHI_POLICY_PATH: /app/guardrails/policy.yaml
+
+extraVolumes:
+  - name: phi-lane-policy
+    configMap:
+      name: phi-lane-policy
+
+extraVolumeMounts:
+  - name: phi-lane-policy
+    mountPath: /app/guardrails/policy.yaml
+    subPath: policy.yaml
+    readOnly: true
+
+# Added to whatever proxy config the chart renders.
+proxy_config:
+  guardrails:
+    - guardrail_name: "phi-lane-guard"
+      litellm_params:
+        guardrail: phi_guardrail.PHILaneGuard
+        mode: "pre_call"
+        default_on: true

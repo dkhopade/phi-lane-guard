@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# PHI Lane Guard policy.
+#
+# The compliance artifact: which models are permitted to process PHI, and what
+# counts as PHI. Readable and reviewable by someone who does not read Python.
+# ---------------------------------------------------------------------------
+
+lanes:
+  # Models allowed to see PHI. In the real deployment these are self-hosted
+  # models inside the customer tenancy with no egress path. Anything not on
+  # this list is denied PHI, and the default of an EMPTY list would deny
+  # everything - deny-by-default is the correct posture for a control.
+  phi_permitted_models:
+    - intenancy-llama
+    - phi-safe-local
+
+# ---------------------------------------------------------------------------
+# Detection tuning.
+#
+# NOT a HIPAA Safe Harbor implementation. Safe Harbor enumerates 18 identifier
+# classes; this covers a subset. Imagery, biometrics and device identifiers are
+# out of scope. State this rather than let it be assumed.
+# ---------------------------------------------------------------------------
+detection:
+  score_threshold: 0.5
+
+  # Presidio's phone recognizer returns a flat 0.4 for US numbers regardless of
+  # format - below the global floor. Phone numbers were silently undetected
+  # until the classifier was tested in isolation. Override per-entity rather
+  # than lowering the global threshold, which would let weak PERSON and
+  # LOCATION hits start causing false denials.
+  entity_thresholds:
+    PHONE_NUMBER: 0.35
+    US_DRIVER_LICENSE: 0.4
+
+  entities:
+    - PERSON
+    - US_SSN
+    - PHONE_NUMBER
+    - EMAIL_ADDRESS
+    - DATE_TIME
+    - LOCATION
+    - US_DRIVER_LICENSE
+    - MEDICAL_LICENSE
+    - US_BANK_NUMBER
+    - CREDIT_CARD
+    - MRN
+
+  # Entities too noisy to justify a denial on their own. A bare date or city is
+  # not PHI; a date beside a patient name is.
+  strong:
+    - PERSON
+    - US_SSN
+    - PHONE_NUMBER
+    - EMAIL_ADDRESS
+    - MRN
+    - US_DRIVER_LICENSE
+    - US_BANK_NUMBER
+    - CREDIT_CARD

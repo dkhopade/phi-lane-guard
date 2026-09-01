@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# Strategic-merge patch for an existing LiteLLM deployment.
+#
+#   kubectl -n <ns> patch deploy <name> --patch-file k8s/deployment-patch.yaml
+#
+# Replace: container name, image reference, namespace.
+# ---------------------------------------------------------------------------
+spec:
+  template:
+    spec:
+      containers:
+        - name: litellm                      # must match your container name
+          image: <region>.ocir.io/<namespace>/phi-lane-guard:1.0.0
+          env:
+            # Without this the proxy cannot import phi_guardrail and the
+            # guardrail silently fails to register.
+            - name: PYTHONPATH
+              value: /app/guardrails
+            - name: PHI_POLICY_PATH
+              value: /app/guardrails/policy.yaml
+          volumeMounts:
+            - name: phi-lane-policy
+              mountPath: /app/guardrails/policy.yaml
+              subPath: policy.yaml
+              readOnly: true
+      volumes:
+        - name: phi-lane-policy
+          configMap:
+            name: phi-lane-policy
